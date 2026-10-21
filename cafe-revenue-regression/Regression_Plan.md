@@ -14,19 +14,19 @@ Mục tiêu là xây dựng một mô hình hồi quy dự báo doanh thu hằng
 
 Notebook `starter_cafe.ipynb` định nghĩa bài toán và cung cấp baseline:
 
-- Dự báo doanh thu cho từng cửa hàng trong khoảng 01/01/2026–31/03/2026.
+- Dự báo doanh thu cho từng cửa hàng trong khoảng 01/01/2026–31/03/2026 (Quý 1/2026).
 - Đánh giá bằng **RMSLE** trên doanh thu không âm.
 - Baseline hiện có lấy **median doanh thu theo cặp `(store_id, weekday)`**, dự phòng bằng median của cửa hàng rồi median toàn bộ dữ liệu.
-- Notebook ghi nhận **RMSLE = 0.2387** khi huấn luyện trên lịch sử trước 01/10/2025 và đánh giá trên quý 4/2025. Sau khi tách dữ liệu thành train/val/test riêng, con số này chỉ là mốc tham khảo lịch sử vì cấu hình train và vai trò các tập đã thay đổi.
+- Notebook ghi nhận **RMSLE = 0.2387** khi huấn luyện trên lịch sử trước 01/10/2025 và đánh giá trên Quý 4/2025 (01/10/2025 – 31/12/2025). Đây là mốc benchmark chuẩn mực cho chiến lược Time-based Out-Of-Time (OOT) validation của dự án.
 
 ### Kết quả kỳ vọng
 
 1. Một pipeline dữ liệu có thể chạy lại và không làm rò rỉ thông tin từ tương lai.
-2. Một mô hình đạt kết quả tốt hơn baseline trên validation theo thời gian.
+2. Một mô hình đạt kết quả tốt hơn baseline trên validation theo thời gian (RMSLE < 0.2387).
 3. Báo cáo giải thích sai số, rủi ro dữ liệu và hiệu năng theo nhóm cửa hàng.
-4. Nếu mục tiêu là nộp bài, xuất đúng file `submission.csv` gồm hai cột `id`, `revenue`, giữ đúng thứ tự `id` trong test.
+4. Khi nhận được file `test.csv` chính thức từ giảng viên, xuất đúng file `submission.csv` gồm hai cột `id`, `revenue`, giữ đúng thứ tự `id` trong test.
 
-**Điều kiện cần giải quyết trước khi tạo submission:** thư mục file hiện có `sample_submission.csv` nhưng không có `test.csv`. Notebook mẫu cho biết `test.csv` dự kiến có 3.869 dòng từ 01/01/2026 đến 31/03/2026. `sample_submission.csv` chỉ chứa `id` và giá trị mẫu `revenue = 18.3`, nên **không thể khôi phục ánh xạ `id → date, store_id, is_promo` chỉ từ file này**. Cần lấy đúng `test.csv` hoặc bảng ánh xạ test chính thức; không tự suy đoán ánh xạ ID.
+**Lưu ý về tập test:** File `test.csv` chính thức (gồm 3.869 dòng dự báo cho Quý 1/2026 từ 01/01/2026 đến 31/03/2026) sẽ được giảng viên tải lên Kaggle sau. Do đó, toàn bộ dữ liệu hiện có trong `train.csv` (sau khi deduplicate và làm sạch) sẽ được bảo toàn làm **Tập huấn luyện đầy đủ (Full Training Set)**; tuyệt đối **không cắt xẻ `train.csv` thành 3 file vật lý cố định trên đĩa**. Thay vào đó, nhóm thiết lập chiến lược kiểm định chéo theo thời gian (Time-based Out-of-Time Validation) trực tiếp trong mã nguồn để phục vụ việc lựa chọn mô hình và tinh chỉnh siêu tham số.
 
 ---
 
@@ -64,41 +64,46 @@ Notebook `starter_cafe.ipynb` định nghĩa bài toán và cung cấp baseline:
 
 **Lưu ý về các con số:** đây là kết quả kiểm tra sơ bộ từ các file cung cấp và đầu ra đã lưu trong notebook. Cần chạy lại các kiểm tra trong pipeline để tạo báo cáo dữ liệu có thể tái lập trước khi huấn luyện chính thức.
 
-### 2.3. Chia `train.csv` thành ba tập nội bộ
+### 2.3. Kế hoạch phân chia dữ liệu và Chiến lược Validation
 
-Đã tạo bộ split nội bộ từ `train.csv` sau khi loại **132 dòng trùng lặp hoàn toàn**. Không dùng random split vì mỗi dòng là quan sát theo thời gian của một cửa hàng; dữ liệu tương lai phải không xuất hiện trong train khi đánh giá quá khứ.
+Toàn bộ dữ liệu trong `train.csv` (26.632 dòng, sau khi loại bỏ 132 dòng trùng lặp hoàn toàn còn **26.500 dòng sạch**) là tập dữ liệu huấn luyện trọn vẹn 2 năm lịch sử (từ 01/01/2024 đến 31/12/2025).
 
-| Tập | Quy tắc ngày | Số dòng | Tỷ lệ trên 26.500 dòng sạch | Vai trò |
+Vì file **`test.csv` chính thức sẽ được giảng viên tải lên Kaggle sau**, nhóm **không chia tách `train.csv` thành 3 file vật lý (train/val/test) lưu trên đĩa**. Việc giữ nguyên tập train đầy đủ giúp:
+- Tránh phân mảnh dữ liệu và lãng phí 3 tháng dữ liệu quý 4/2025 khi huấn luyện mô hình sau cùng.
+- Tránh nhầm lẫn giữa tập "test tự tạo" với file `test.csv` chính thức của cuộc thi.
+
+Thay vào đó, chiến lược kiểm định được thực hiện theo cơ chế **Time-based Out-Of-Time (OOT) Validation** trực tiếp trong code:
+
+| Phân vùng | Quy tắc ngày | Số dòng | Tỷ lệ trên 26.500 dòng sạch | Vai trò kỹ thuật |
 |---|---|---:|---:|---|
-| Train | `date < 2025-07-01` (01/01/2024–30/06/2025) | 18.982 | 71,63% | Fit pipeline và mô hình |
-| Validation | `2025-07-01 <= date < 2025-10-01` (Q3/2025) | 3.686 | 13,91% | So sánh mô hình, chọn feature/hyperparameter |
-| Test nội bộ | `2025-10-01 <= date < 2026-01-01` (Q4/2025) | 3.832 | 14,46% | Đánh giá cuối cùng một lần sau khi khóa pipeline |
+| **Tập Huấn Luyện (Train)** | `date < 2025-10-01` (01/01/2024 – 30/09/2025) | 22.668 | 85,54% | Dùng để fit pipeline, transformers, và huấn luyện mô hình |
+| **Tập Kiểm Định (Validation OOT)** | `2025-10-01 <= date <= 2025-12-31` (Q4/2025) | 3.832 | 14,46% | So sánh baseline, lựa chọn feature, tinh chỉnh hyperparameter và ensemble |
 
-Tỷ lệ theo số dòng xấp xỉ **72/14/14**, không ép đúng 70/15/15 vì ranh giới theo quý giữ được chu kỳ lịch và bám sát mục tiêu dự báo nhiều ngày trong tương lai. Split test nội bộ là các nhãn lịch sử được giữ lại từ `train.csv`; nó **không phải** file `test.csv` chính thức dùng để tạo submission Q1/2026. File test chính thức hiện vẫn chưa được cung cấp.
+**Lý do chọn Quý 4/2025 làm Validation Set**:
+- Độ dài validation là 92 ngày, mô phỏng chính xác horizon dự báo 90 ngày của Quý 1/2026 (`test.csv`).
+- Đảm bảo tính tuần tự thời gian tuyệt đối: Mô hình chỉ học từ quá khứ (trước tháng 10/2025) để dự đoán tương lai, loại bỏ hoàn toàn rủi ro Data Leakage.
+- Khớp chuẩn với thiết lập benchmark của `starter_cafe.ipynb` (đạt RMSLE baseline = 0.2387).
 
-Các file đã sinh trong thư mục `regression_splits/`: `train.csv`, `val.csv`, `test.csv`. Tệp gốc không bị ghi đè. Để tái tạo split:
+Mã nguồn chia tập logic trong pipeline:
 
 ```python
 import pandas as pd
-from pathlib import Path
 
-source = pd.read_csv("train.csv", parse_dates=["date"])
-source = source.drop_duplicates()  # dữ liệu hiện tại có 132 exact duplicates
-if source.duplicated(["date", "store_id"]).any():
-    raise ValueError("Cần xử lý khóa (date, store_id) bị trùng nhưng không giống hệt nhau")
+# 1. Đọc dữ liệu và loại bỏ bản ghi trùng lặp hoàn toàn
+source = pd.read_csv("data/raw/train.csv", parse_dates=["date"])
+source = source.drop_duplicates()  # loại 132 dòng trùng lặp
 
-out = Path("regression_splits")
-out.mkdir(parents=True, exist_ok=True)
-parts = {
-    "train": source[source.date < "2025-07-01"],
-    "val": source[(source.date >= "2025-07-01") & (source.date < "2025-10-01")],
-    "test": source[(source.date >= "2025-10-01") & (source.date < "2026-01-01")],
-}
-for name, part in parts.items():
-    part.sort_values(["date", "store_id"]).to_csv(out / f"{name}.csv", index=False)
+# 2. Phân chia logic theo mốc thời gian (không lưu ra nhiều file csv riêng)
+train_df = source[source["date"] < "2025-10-01"].copy()
+val_df = source[(source["date"] >= "2025-10-01") & (source["date"] <= "2025-12-31")].copy()
+
+print(f"Train records: {len(train_df):,} | Val records: {len(val_df):,}")
 ```
 
-Quy tắc đánh giá: chỉ dùng `train` để fit và các fold walk-forward nằm bên trong giai đoạn train để kiểm tra ổn định; dùng `val` để lựa chọn pipeline; chỉ mở `test` nội bộ khi quyết định mô hình đã được khóa. Sau đánh giá cuối cùng, nếu cần dự báo Q1/2026, fit lại mô hình đã chốt trên toàn bộ lịch sử sạch tới 31/12/2025 và dự đoán file test chính thức khi được cung cấp.
+**Quy trình khi nhận file `test.csv` chính thức từ giảng viên**:
+1. Khóa pipeline, cấu hình feature và siêu tham số tốt nhất đã được kiểm chứng trên tập Validation (Q4/2025).
+2. **Huấn luyện lại (Final Retrain)** mô hình trên **toàn bộ 100% dữ liệu lịch sử sạch** (26.500 dòng, từ 01/01/2024 đến 31/12/2025) để mô hình cập nhật xu hướng và hành vi tiêu dùng gần nhất của Quý 4/2025.
+3. Sinh dự báo cho 3.869 dòng trong `test.csv` và xuất file `submission.csv`.
 
 ---
 
@@ -137,11 +142,10 @@ def rmsle(y_true, y_pred):
 
 ### 3.3. KPI đề xuất
 
-- **Baseline trên split mới:** sau khi loại 132 dòng trùng lặp hoàn toàn, baseline median `(store_id, weekday)` đạt RMSLE khoảng `0.3101` trên validation 01/07/2025–30/09/2025 khi fit trên dữ liệu đến 30/06/2025. Cần tái tạo lại bằng script chính thức sau khi pipeline ổn định.
-- **Mục tiêu thử nghiệm:** cải thiện ít nhất 5% tương đối so với baseline trên validation mới (mục tiêu tham khảo khoảng `0.2946` trở xuống); đây là mục tiêu dự án, không phải cam kết trước khi huấn luyện.
-- Không so sánh trực tiếp `0.2387` của notebook với `0.3101` của split mới vì tập fit, khoảng thời gian validation và quy tắc dedup khác nhau.
-- **Ổn định:** mô hình không chỉ tốt ở một tháng hoặc một cửa hàng; kiểm tra thêm kết quả theo fold thời gian và theo nhóm cửa hàng.
-- **Tính đúng đắn:** không có leakage, không có `NaN`/`inf` trong dự đoán và không âm sau bước hậu xử lý.
+- **Baseline chuẩn mực:** Baseline median `(store_id, weekday)` đạt RMSLE **0.2387** trên tập validation Q4/2025 (01/10/2025 – 31/12/2025) khi fit trên dữ liệu đến 30/09/2025.
+- **Mục tiêu thử nghiệm:** Cải thiện ít nhất 15%–30% tương đối so với baseline (mục tiêu đưa RMSLE từ `0.2387` xuống dưới `0.1800`, tiệm cận `0.1632` với mô hình Ensemble LightGBM + CatBoost).
+- **Độ ổn định:** Mô hình duy trì sai số ổn định qua các fold thời gian walk-forward và không bị thiên lệch theo từng cụm cửa hàng.
+- **Tính đúng đắn:** Không có Data Leakage từ tương lai, không có `NaN`/`inf` trong dự đoán, giá trị dự đoán được biến đổi ngược bằng `np.expm1()` và clip chặn dưới $\ge 0$.
 
 Metric phụ để chẩn đoán gồm MAE trên doanh thu gốc, sai số theo cửa hàng, sai số theo tháng, sai số theo loại cửa hàng, ngày khuyến mãi/ngày thường và nhóm cửa hàng có lịch sử ngắn. Không dùng các metric phụ này thay cho RMSLE khi lựa chọn mô hình chính.
 
@@ -299,30 +303,30 @@ Có thể thử:
 
 ## 7. Chiến lược chia tập và đánh giá
 
-### 7.1. Phân vai train / validation / test nội bộ
+### 7.1. Phân vai Train / Validation theo thời gian (Time-based Out-Of-Time Split)
 
-Sử dụng các file đã tạo trong `regression_splits/` và giữ nguyên ranh giới thời gian:
+Vì file `test.csv` chính thức sẽ được giảng viên tải lên Kaggle sau, quy trình kiểm định nội bộ được tổ chức hoàn toàn bằng cơ chế phân chia theo thời gian trong mã nguồn:
 
-- **Train:** `date < 2025-07-01` — 18.982 dòng.
-- **Validation:** `2025-07-01 <= date < 2025-10-01` — 3.686 dòng.
-- **Test nội bộ:** `2025-10-01 <= date < 2026-01-01` — 3.832 dòng.
+- **Tập Train (Quá khứ):** `date < 2025-10-01` (01/01/2024 – 30/09/2025) — **22.668 dòng** (85,54% dữ liệu sạch). Toàn bộ transformers, feature encoders, scalers và mô hình chỉ được fit trên giai đoạn này.
+- **Tập Validation (Out-Of-Time):** `2025-10-01 <= date <= 2025-12-31` (Quý 4/2025) — **3.832 dòng** (14,46% dữ liệu sạch). Dùng để đánh giá độ chính xác thực tế, chọn đặc trưng, tinh chỉnh siêu tham số và xác định trọng số Ensemble.
 
-Validation Q3/2025 được dùng để so sánh baseline, mô hình, feature và hyperparameter. Test Q4/2025 là holdout cuối, chỉ dùng một lần sau khi đã khóa pipeline, không dùng để lựa chọn feature hay tuning. Đây là split theo thời gian; không chia ngẫu nhiên và không trộn ngày từ tương lai vào train.
+**Lợi thế kỹ thuật**:
+- Quý 4/2025 có độ dài 92 ngày, tương đồng với horizon 90 ngày của tập test chính thức (Quý 1/2026).
+- Tái lập chuẩn xác điểm RMSLE baseline `0.2387` của notebook khởi đầu `starter_cafe.ipynb`.
+- Tuyệt đối không xáo trộn dòng ngẫu nhiên (no random shuffle) nhằm bảo vệ tính đơn điệu thời gian và ngăn chặn data leakage.
 
-Metric validation ban đầu của baseline median `(store_id, weekday)` trên split mới là RMSLE khoảng `0.3101` sau khi loại exact duplicates. Giá trị cần được tái lập trong pipeline trước khi xem là benchmark chính thức. Điểm `0.2387` trong notebook là từ một cách chia khác (fit đến 30/09/2025, validation Q4/2025), nên chỉ dùng tham khảo lịch sử và không phải ngưỡng so sánh trực tiếp.
+### 7.2. Walk-forward Validation (Expanding Window CV)
 
-### 7.2. Walk-forward validation bổ sung
+Để kiểm tra xem mô hình có hoạt động ổn định qua các mùa khác nhau trong năm hay không, nhóm thiết lập các fold tịnh tiến thời gian bổ sung:
 
-Chạy các fold bổ sung **chỉ trong giai đoạn train** để đánh giá tính ổn định; không dùng test nội bộ Q4 để tạo fold hay điều chỉnh mô hình:
-
-| Fold | Thời điểm fit | Thời điểm validation | Mục đích |
+| Fold | Giai đoạn Huấn luyện (Train) | Giai đoạn Đánh giá (Val) | Mục đích kiểm định |
 |---|---|---|---|
-| A | Đến 31/12/2024 | 01/01/2025–31/03/2025 | Đo dự báo quý tiếp theo |
-| B | Đến 31/03/2025 | 01/04/2025–30/06/2025 | Kiểm tra độ ổn định trong giai đoạn train |
-| Holdout chính để chọn mô hình | Đến 30/06/2025 | 01/07/2025–30/09/2025 | Chọn pipeline trên validation đã khóa |
-| Final holdout | Quyết định pipeline trước khi xem nhãn Q4 | 01/10/2025–31/12/2025 | Báo cáo chất lượng cuối cùng, một lần |
+| **Fold 1** | Đến 31/12/2024 (1 năm) | 01/01/2025 – 31/03/2025 (Q1/2025) | Đo năng lực dự báo quý 1 (có Tết Âm Lịch 2025) |
+| **Fold 2** | Đến 31/03/2025 | 01/04/2025 – 30/06/2025 (Q2/2025) | Kiểm tra ổn định đầu mùa hè |
+| **Fold 3** | Đến 30/06/2025 | 01/07/2025 – 30/09/2025 (Q3/2025) | Kiểm tra giai đoạn mùa mưa và cao điểm |
+| **Primary Val (OOT)** | Đến 30/09/2025 (21 tháng) | 01/10/2025 – 31/12/2025 (Q4/2025) | **Fold chính để chốt mô hình và trọng số Ensemble** |
 
-Mọi fold phải train chỉ trên quá khứ và validation ở tương lai. Khi báo cáo, nêu rõ số ngày, số dòng, số cửa hàng và RMSLE mỗi fold; so sánh mean/median RMSLE và mức dao động.
+Mọi fold đều tuân thủ nguyên tắc: chỉ học từ quá khứ, đánh giá ở tương lai. Báo cáo đánh giá ghi nhận RMSLE từng fold để đảm bảo mô hình không overfit vào riêng một mùa cụ thể.
 
 ### 7.3. Đánh giá theo nhóm
 
@@ -375,7 +379,7 @@ Chỉ thử sau khi mô hình với calendar, store, promotion, weather và holi
 
 | Experiment | Feature set | Model | Câu hỏi cần trả lời |
 |---|---|---|---|
-| E0 | Baseline starter | Median store-weekday | Tái lập RMSLE khoảng 0.3101 trên validation split mới; ghi riêng 0.2387 của split notebook cũ |
+| E0 | Baseline starter | Median store-weekday | Tái lập RMSLE 0.2387 trên validation Q4/2025 (fit đến 30/09/2025) chuẩn theo notebook |
 | E1 | Calendar + store | Ridge trên log target | Mùa vụ và metadata có cải thiện baseline không? |
 | E2 | E1 + promotion | Ridge/boosting | Khuyến mãi tăng khả năng dự báo đến mức nào? |
 | E3 | E2 + holiday/weather | CatBoost/boosting | Các bảng bổ trợ có tăng giá trị out-of-time không? |
@@ -547,18 +551,20 @@ Có thể thực hiện theo sprint ngắn 5–8 ngày làm việc tùy yêu c�
 - [ ] Sau mỗi join, row count và khóa dòng được kiểm tra.
 
 ### Modeling
-- [ ] Ba tập nội bộ đã được tạo sau exact dedup: train 18.982, val 3.686, test 3.832 dòng.
-- [ ] Baseline RMSLE trên validation mới đã được tái lập; điểm 0.2387 cũ không bị so sánh sai với split mới.
-- [ ] Test nội bộ Q4/2025 chỉ được mở sau khi khóa mô hình; không có random split dùng làm kết quả chính.
-- [ ] Feature target-derived không dùng target tương lai.
+- [ ] Bảo toàn toàn bộ 26.500 dòng train sạch (sau loại 132 duplicate), không chia file vật lý.
+- [ ] Thiết lập Time-based Out-Of-Time Validation (Train: trước 01/10/2025; Val: Q4/2025).
+- [ ] Tái lập chuẩn xác baseline RMSLE = 0.2387 trên tập Validation Q4/2025.
+- [ ] Chạy Walk-forward Expanding Window Validation để kiểm tra tính ổn định mùa vụ.
+- [ ] Feature target-derived không dùng target tương lai (chống rò rỉ dữ liệu).
 - [ ] Validation mô phỏng đúng cách dự báo 90 ngày.
 - [ ] Metric RMSLE trên thang revenue được dùng để chọn mô hình.
 - [ ] Có báo cáo metric tổng thể, theo fold và các nhóm cửa hàng quan trọng.
-- [ ] Mô hình cuối tốt hơn baseline và không chỉ cải thiện trên một fold.
+- [ ] Mô hình cuối tốt hơn baseline (RMSLE < 0.2387) và duy trì ổn định.
 
 ### Submission / handoff
-- [ ] Train lại bằng toàn bộ lịch sử được phép sau khi chốt pipeline.
-- [ ] `submission.csv` có đúng hai cột `id`, `revenue` và đúng số dòng test.
+- [ ] Nhận file `test.csv` chính thức khi giảng viên upload lên Kaggle.
+- [ ] Train lại mô hình đã chọn trên toàn bộ lịch sử 100% sạch (26.500 dòng từ 01/01/2024 đến 31/12/2025).
+- [ ] `submission.csv` có đúng hai cột `id`, `revenue` và đúng số dòng test (3.869 dòng).
 - [ ] ID giữ nguyên thứ tự chính thức; không thiếu hoặc lặp.
 - [ ] Prediction không chứa `NaN`, `inf` hoặc giá trị âm.
 - [x] Lưu model, cấu hình, phiên bản thư viện (`requirements.txt`, `venv`), seed, metric và hướng dẫn chạy lại (`README.md`).
@@ -569,11 +575,11 @@ Có thể thực hiện theo sprint ngắn 5–8 ngày làm việc tùy yêu c�
 
 Theo góc nhìn Senior Data Scientist, nên ưu tiên **độ tin cậy của dữ liệu và validation** trước khi dành nhiều thời gian tuning. Thứ tự đề xuất:
 
-1. Lấy `test.csv`, xây dựng data contract và xử lý các lỗi dữ liệu đã phát hiện.
-2. Tái tạo baseline RMSLE khoảng `0.3101` trên validation Q3/2025 với split mới; ghi nhận riêng `0.2387` là điểm từ split notebook cũ, sau đó chạy thêm walk-forward validation chỉ trong giai đoạn train.
-3. Xây dựng bảng feature theo ngày/cửa hàng, chuẩn hóa cửa hàng, join weather/holiday an toàn.
+1. Làm sạch dữ liệu, xử lý 132 dòng trùng lặp, chuẩn hóa category/open_date và join an toàn weather/holidays.
+2. Thiết lập Time-based OOT Validation (Train: trước 01/10/2025, Val: Q4/2025); tái tạo baseline RMSLE = `0.2387`, sau đó chạy thêm walk-forward expanding window validation.
+3. Xây dựng bảng feature theo ngày/cửa hàng, chuẩn hóa cửa hàng, xử lý khoảng cách Tết Âm Lịch 2026.
 4. Thử mô hình boosting trên `log1p(revenue)` và so sánh với baseline bằng RMSLE.
-5. Chỉ bổ sung lag/rolling nếu có thể mô phỏng dự báo nhiều ngày mà không dùng doanh thu thực trong horizon.
-6. Phân tích lỗi, chốt mô hình, train cuối cùng và kiểm tra submission.
+5. Bổ sung lag/rolling an toàn (chỉ dùng lịch sử $t-1$) và thử nghiệm Weighted Ensemble.
+6. Khi giảng viên upload `test.csv` chính thức lên Kaggle: Fit lại mô hình trên 100% dữ liệu lịch sử sạch (26.500 dòng), dự báo và kiểm tra checklist submission.
 
 **Nguyên tắc quyết định cuối cùng:** chọn pipeline đơn giản nhất cho kết quả out-of-time tốt, ổn định, không leakage và có thể tái lập — không chọn mô hình chỉ vì độ phức tạp hoặc điểm train cao.

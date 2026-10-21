@@ -35,49 +35,55 @@ Xây dựng mô hình phân loại nhị phân ước lượng xác suất khác
 | Giá trị cần điều tra | `age` tối đa 999; `income_month` và `credit_limit` có cực trị lớn; `utilization_6m` có giá trị âm và lớn hơn 1; `txn_amount_3m` có giá trị âm |
 | `bank_code` | Chỉ có một giá trị quan sát được: `VB01` |
 | Submission template | 8.000 dòng, hai cột `customer_id`, `churn_3m`; cột `churn_3m` hiện có giá trị mẫu cố định `0.12` |
-| Test set | Chưa thấy file `test.csv` trong những file được cung cấp ở lượt này; notebook mẫu có tham chiếu đến `test.csv` |
+| Test set | File `test.csv` (8.000 khách hàng tại snapshot 30/06/2026) sẽ được giảng viên tải lên Kaggle sau |
 
 **Lưu ý:** số liệu trên phản ánh file train thô trước khi xử lý. Mọi thống kê, tỷ lệ target và phân phối feature phải được tính lại sau khi xử lý duplicate và xác nhận quy tắc làm sạch.
 
-### 1.3. Chia dữ liệu thành train / validation / test
+### 1.3. Kế hoạch phân chia dữ liệu và Chiến lược Validation
 
-Đã tạo split nội bộ từ `train(1).csv` sau khi loại **120 dòng trùng lặp hoàn toàn**. Vì dataset là dữ liệu khách hàng dạng cross-sectional với một snapshot cho mỗi khách hàng sau dedup và target có mất cân bằng, dùng **stratified random split 70/15/15** để giữ tỷ lệ churn gần tương đương giữa các tập. Seed cố định là `42` để kết quả tái lập được.
+Dữ liệu `train(1).csv` có 12.120 dòng thô. Sau khi loại bỏ **120 dòng trùng lặp hoàn toàn**, tập dữ liệu còn chính xác **12.000 khách hàng duy nhất** với 1.405 khách hàng rời bỏ (tỷ lệ churn $11,708\%$).
 
-| Tập | Số dòng | Tỷ lệ | Churn = 1 | Churn rate |
-|---|---:|---:|---:|---:|
-| Train | 8.400 | 70% | 984 | 11,714% |
-| Validation | 1.800 | 15% | 211 | 11,722% |
-| Test nội bộ | 1.800 | 15% | 210 | 11,667% |
-| **Tổng sau dedup** | **12.000** | **100%** | **1.405** | **11,708%** |
+Vì file **`test.csv` chính thức sẽ được giảng viên tải lên Kaggle sau**, nhóm **không chia tách `train.csv` thành 3 file vật lý (train/val/test 70/15/15) lưu trên đĩa**. Việc giữ nguyên 12.000 khách hàng giúp:
+- Tận dụng trọn vẹn 100% dữ liệu để huấn luyện, không lãng phí 30% mẫu (3.600 khách hàng).
+- Tránh làm loãng số lượng mẫu thiểu số (lớp churn = 1 vốn chỉ có 1.405 trường hợp).
 
-Số lớp còn lại: train có 7.416 nhãn 0; validation có 1.589 nhãn 0; test có 1.590 nhãn 0. Sau exact dedup, `customer_id` duy nhất trên 12.000 dòng. Nếu còn ID trùng nhưng dữ liệu không giống hệt nhau ở một phiên bản dataset khác, dừng split và xác minh snapshot/record trước khi tiếp tục.
+Thay vào đó, nhóm áp dụng chiến lược **Stratified 5-Fold Cross-Validation** làm phương pháp đánh giá chuẩn mực:
 
-Các file đã sinh trong thư mục `classification_splits/`: `train.csv`, `val.csv`, `test.csv`. File gốc `train(1).csv` không bị ghi đè. Mã tái tạo split:
+| Phân vùng | Số dòng | Tỷ lệ | Churn = 1 | Tỷ lệ Churn | Vai trò kỹ thuật |
+|---|---:|---:|---:|---:|---|
+| **Full Train (sau dedup)** | **12.000** | **100%** | **1.405** | **11,708%** | Tập dữ liệu hoàn chỉnh để cross-validation |
+| *Mỗi Fold Huấn luyện (4/5)* | *9.600* | *80%* | *~1.124* | *~11,71%* | Fit ColumnTransformer (impute, scale, encode) và train model |
+| *Mỗi Fold Đánh giá (1/5)* | *2.400* | *20%* | *~281* | *~11,71%* | Đánh giá ROC-AUC out-of-fold không rò rỉ dữ liệu |
+
+**Quy trình Cross-Validation chuẩn mực**:
+1. Sử dụng `StratifiedKFold(n_splits=5, shuffle=True, random_state=42)` trên toàn bộ 12.000 khách hàng.
+2. Tiền xử lý (Imputer, Scaler, Encoder) được fit nghiêm ngặt **chỉ trên 4 folds huấn luyện** của từng vòng lặp và transform lên fold validation còn lại (chống rò rỉ dữ liệu).
+3. Thu thập dự đoán Out-Of-Fold (OOF) cho đủ 12.000 khách hàng để:
+   - Tính toán ROC-AUC tổng thể ổn định, có độ lệch chuẩn (std) qua 5 folds.
+   - Dùng xác suất OOF để tối ưu tỷ trọng Blending / Rank Averaging giữa LightGBM và CatBoost.
+   - Đánh giá Calibration Curve và phân tích lỗi (False Positive / False Negative).
 
 ```python
 import pandas as pd
-from pathlib import Path
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 
-source = pd.read_csv("train(1).csv").drop_duplicates()
-if source["customer_id"].duplicated().any():
-    raise ValueError("Một customer_id có nhiều record khác nhau; cần xác minh trước khi split")
-if source["churn_3m"].isna().any() or not set(source["churn_3m"].unique()).issubset({0, 1}):
-    raise ValueError("Target churn_3m không hợp lệ")
+# 1. Đọc dữ liệu và loại bỏ duplicate
+df = pd.read_csv("train(1).csv").drop_duplicates()
+assert df["customer_id"].nunique() == len(df) == 12000
 
-train, rest = train_test_split(
-    source, test_size=0.30, stratify=source["churn_3m"], random_state=42
-)
-val, test = train_test_split(
-    rest, test_size=0.50, stratify=rest["churn_3m"], random_state=42
-)
-out = Path("classification_splits")
-out.mkdir(parents=True, exist_ok=True)
-for name, part in {"train": train, "val": val, "test": test}.items():
-    part.to_csv(out / f"{name}.csv", index=False)
+# 2. Thiết lập Stratified 5-Fold Cross-Validation cố định
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+for fold, (train_idx, val_idx) in enumerate(skf.split(df, df["churn_3m"])):
+    train_fold = df.iloc[train_idx]
+    val_fold = df.iloc[val_idx]
+    print(f"Fold {fold+1}: Train={len(train_fold)}, Val={len(val_fold)} (Churn: {val_fold['churn_3m'].mean():.2%})")
 ```
 
-**Cách dùng tập:** fit preprocessing và mô hình chỉ trong train; dùng Stratified 5-fold CV bên trong train để chọn ứng viên/hyperparameter; dùng validation để so sánh cuối, chọn calibration/threshold khi có yêu cầu nghiệp vụ; sau khi khóa toàn bộ quyết định mới chấm test nội bộ đúng một lần. Test nội bộ vẫn có label vì nó được lấy từ file train đã gán nhãn, nên khác với `test.csv` benchmark/Kaggle (chưa được cung cấp) vốn không có target. Không dùng test nội bộ để tuning.
+**Quy trình khi nhận file `test.csv` chính thức từ giảng viên**:
+1. Nhận file `test.csv` (8.000 khách hàng snapshot 30/06/2026).
+2. **Kaggle 5-Fold Bagging Ensemble**: Dùng 5 models đã huấn luyện qua 5 folds để dự đoán xác suất trên `test.csv`, sau đó lấy trung bình (hoặc Rank Averaging) 5 kết quả dự đoán. Phương pháp này vừa tận dụng 100% dữ liệu train vừa giảm phương sai dự đoán (variance reduction).
+3. Hoặc huấn luyện lại mô hình tốt nhất trên toàn bộ 12.000 khách hàng với số vòng lặp tối ưu tìm được từ CV.
+4. Kiểm tra checklist và xuất file `submission.csv`.
 
 ---
 
@@ -90,15 +96,15 @@ for name, part in {"train": train, "val": val, "test": test}.items():
 3. Thiết kế pipeline tiền xử lý không rò rỉ dữ liệu.
 4. Xây dựng baseline dễ giải thích.
 5. So sánh mô hình tuyến tính và mô hình cây/boosting.
-6. Dùng 70% dữ liệu làm train để fit và 5-fold Stratified CV bên trong train; dùng validation 15% để chọn mô hình, còn test 15% được giữ kín cho đánh giá cuối cùng bằng ROC AUC.
+6. Áp dụng Stratified 5-Fold Cross-Validation trên toàn bộ 12.000 khách hàng sạch để đánh giá ROC-AUC OOF, chọn mô hình và tối ưu Ensemble.
 7. Giải thích mô hình, phân tích lỗi và xác định threshold nếu có mục tiêu kinh doanh.
-8. Huấn luyện mô hình cuối cùng, dự đoán tập test và xuất submission.
+8. Huấn luyện mô hình cuối cùng, dự đoán tập test khi nhận được từ giảng viên và xuất submission.
 9. Thiết lập kiểm thử dữ liệu, khả năng tái lập và giám sát drift sau triển khai.
 
 ### 2.2 Tiêu chí thành công kỹ thuật
 
 - Có thể tái tạo kết quả từ cùng dữ liệu, cấu hình và seed.
-- ROC AUC được báo cáo qua 5 fold stratified bên trong tập train 70% (mean và độ lệch chuẩn), sau đó báo cáo validation riêng; test holdout 15% chỉ đánh giá một lần sau khi khóa mô hình.
+- ROC AUC được báo cáo qua Stratified 5-Fold Cross-Validation trên toàn bộ 12.000 khách hàng (báo cáo mean ROC-AUC và standard deviation trên OOF predictions).
 - Tiền xử lý được fit bên trong từng fold, tránh dùng thống kê từ validation fold.
 - Không có target leakage; mọi feature phải có sẵn tại thời điểm snapshot.
 - Xử lý duplicate có quy tắc rõ ràng và không nhân đôi trọng số khách hàng.
@@ -372,17 +378,15 @@ Chỉ tạo feature có ý nghĩa và có sẵn tại snapshot. Mỗi feature m�
 
 ## 8. Phase 4 — Thiết kế validation và metric
 
-### 8.1 Phương pháp chia dữ liệu
+### 8.1 Phương pháp chia dữ liệu (Stratified 5-Fold Cross-Validation)
 
-Dùng ba tập đã tạo trong `classification_splits/`:
+Vì file `test.csv` chính thức sẽ được giảng viên tải lên Kaggle sau, nhóm không chia cắt file dữ liệu vật lý trên đĩa. Toàn bộ **12.000 khách hàng sạch** sau khi loại 120 bản ghi trùng lặp được đưa vào quy trình **Stratified 5-Fold Cross-Validation**:
 
-- **Train:** 8.400 dòng (70%, 984 churners). Fit pipeline; dùng 5-fold `StratifiedKFold(shuffle=True, random_state=42)` chỉ bên trong tập này cho CV/tuning.
-- **Validation:** 1.800 dòng (15%, 211 churners). Dùng để so sánh shortlist mô hình, kiểm tra calibration và chọn threshold nếu có tiêu chí nghiệp vụ. Không lặp tuning vô hạn trên validation.
-- **Test nội bộ:** 1.800 dòng (15%, 210 churners). Giữ kín đến khi đã khóa preprocessing, feature set, mô hình và quy tắc threshold/calibration; báo cáo kết quả cuối cùng một lần.
-
-Cách chia được thực hiện **sau khi loại 120 exact duplicates**, theo `stratify=churn_3m`, `random_state=42`. Tỷ lệ churn lần lượt là 11,714% / 11,722% / 11,667%, cho thấy stratification giữ phân phối lớp khá đồng đều. Không oversample/undersample trước khi chia; mọi resampling nếu có phải nằm bên trong training fold. Fit imputer, encoder, scaler và feature selection chỉ trên phần fit của từng fold.
-
-Dataset hiện tại có một snapshot cho từng khách hàng sau de-dup, vì thế stratified random split là lựa chọn phù hợp cho holdout nội bộ. Nếu bổ sung nhiều snapshot trên cùng khách hàng hoặc mục tiêu chuyển sang dự báo theo thời gian, cần chuyển sang group split theo khách hàng hoặc temporal split tùy data contract. `classification_splits/test.csv` là test có nhãn nội bộ và không thay thế file `test.csv` chính thức chưa được cung cấp.
+- **Cấu hình chia fold:** `StratifiedKFold(n_splits=5, shuffle=True, random_state=42)`.
+- **Cân bằng lớp:** Mỗi fold validation chứa đúng 2.400 khách hàng với tỷ lệ churn được giữ nguyên chính xác ở mức $11,71\%$ (~281 churners mỗi fold).
+- **Phân tách nghiêm ngặt:** Trong từng fold, 9.600 khách hàng (80%) dùng để fit pipeline tiền xử lý (imputation, scaling, one-hot encoding) và huấn luyện mô hình; 2.400 khách hàng (20%) chỉ dùng để transform và đánh giá OOF (Out-Of-Fold).
+- **Không oversampling trước CV:** Tuyệt đối không resample/SMOTE trên toàn bộ tập dữ liệu trước khi chia fold để tránh rò rỉ dữ liệu giữa train và val fold.
+- **Tập test chính thức:** Khi giảng viên cung cấp `test.csv` (8.000 khách hàng), nhóm sẽ dùng ensemble từ 5 folds (5-Fold Bagging) hoặc train lại mô hình trên toàn bộ 12.000 khách hàng để tạo file `submission.csv`.
 
 ### 8.2 Metric
 
@@ -400,13 +404,11 @@ ROC AUC không phụ thuộc vào threshold cố định. Không tối ưu accur
 
 Mỗi mô hình cần có:
 
-- AUC từng fold bên trong train, mean và standard deviation;
-- ROC AUC/PR AUC trên validation;
-- Kết quả test nội bộ chỉ sau khi khóa mô hình, được báo cáo riêng và không dùng để lựa chọn mô hình;
-- PR AUC trung bình;
-- confusion matrix, precision/recall tại threshold được chọn sau đó;
-- ROC curve và precision-recall curve;
-- lift/recall theo top 5%, 10% hoặc theo ngưỡng mà bộ phận kinh doanh có thể xử lý;
+- ROC AUC từng fold, mean ROC-AUC và standard deviation qua 5 folds;
+- Out-of-Fold (OOF) ROC-AUC và PR-AUC trên toàn bộ 12.000 khách hàng;
+- Precision-Recall curve và Lift curve theo top 5%, 10% khách hàng rủi ro cao nhất;
+- Bảng confusion matrix và trade-off precision/recall tại các threshold thử nghiệm;
+- Dự đoán xác suất OOF để làm đầu vào cho bài toán Ensembling (Weighted Averaging / Rank Averaging).
 - OOF prediction để so sánh mô hình, calibration và chọn threshold.
 
 ---
@@ -625,28 +627,30 @@ Kế hoạch tham khảo cho một vòng triển khai ban đầu; thời lượn
 ### Data
 
 - [ ] Đúng nguồn dữ liệu churn; không nhầm với dataset khác trong workspace.
-- [ ] Dedupe và kiểm tra `customer_id` được thực hiện trước khi chia tập/CV.
-- [ ] Đã tạo train/val/test 70/15/15 với số dòng 8.400/1.800/1.800 và seed 42.
-- [ ] Phân phối target được tính lại sau cleaning.
+- [ ] Dedupe và kiểm tra `customer_id` được thực hiện trước khi chia tập/CV (còn 12.000 khách hàng sạch).
+- [ ] Giữ nguyên 100% dữ liệu train sạch, không cắt xẻ file vật lý trên đĩa.
+- [ ] Phân phối target được tính lại sau cleaning (tỷ lệ churn 11,708%).
 - [ ] Missingness, category aliases, giá trị cực trị và định dạng ngày đã được kiểm tra.
 - [ ] Các feature đều có sẵn tại 30/06/2026.
 
 ### Model/evaluation
 
-- [ ] Pipeline preprocessing nằm bên trong cross-validation.
+- [ ] Thiết lập Stratified 5-Fold Cross-Validation cố định với seed 42.
+- [ ] Pipeline preprocessing (ColumnTransformer) nằm nghiêm ngặt bên trong cross-validation.
 - [ ] ROC AUC được dùng làm metric chính.
-- [ ] Có mean/std ROC AUC và kết quả từng fold trên train.
-- [ ] Validation được dùng cho model selection; test nội bộ chỉ được chấm một lần sau khi khóa pipeline.
+- [ ] Có mean/std ROC AUC và kết quả từng fold trên tập train.
+- [ ] OOF predictions được dùng cho model selection và tối ưu trọng số Ensemble (Rank Averaging).
 - [ ] Có PR AUC hoặc metric bổ sung để đánh giá lớp churn ít hơn.
 - [ ] Mô hình được so sánh trên cùng các folds.
 - [ ] Không tuning dựa vào test labels/leaderboard như nguồn đánh giá duy nhất.
-- [ ] Có error analysis và giải thích mô hình phù hợp.
+- [ ] Có error analysis và giải thích mô hình phù hợp (SHAP).
 
 ### Submission/reproducibility
 
-- [ ] Đã nhận `test.csv` chính thức và xác minh schema.
+- [ ] Nhận file `test.csv` chính thức khi giảng viên upload lên Kaggle.
+- [ ] Sử dụng 5-Fold Bagging Ensemble hoặc retrain trên 12.000 dòng để dự đoán `test.csv`.
 - [ ] Dùng xác suất class `1`, không phải nhãn dự đoán rời rạc.
-- [ ] ID/độ dài/cột output khớp template đã xác nhận.
+- [ ] ID/độ dài/cột output khớp template đã xác nhận (8.000 dòng test).
 - [ ] Không có NaN, Inf hoặc score ngoài `[0, 1]`.
 - [ ] Lưu code/config/seed/model artifact/validation report.
 
@@ -658,12 +662,12 @@ Bắt đầu bằng một pipeline sạch và baseline có thể tái lập, kh�
 
 Lộ trình khuyến nghị:
 
-1. Deduplicate và hoàn thành data-quality audit.
+1. Deduplicate (loại 120 bản ghi trùng) và hoàn thành data-quality audit.
 2. Tạo `ColumnTransformer` + `Pipeline` gồm numeric imputation/scaling và categorical imputation/one-hot encoding.
-3. Thiết lập train/validation/test 70/15/15 cố định; chạy 5-fold Stratified CV chỉ trên train và lưu OOF predictions.
-4. Dùng Logistic Regression làm baseline; so sánh với CatBoost hoặc gradient boosting.
-5. Chọn mô hình bằng CV trong train và validation; sau khi khóa mô hình, đánh giá test nội bộ một lần, dùng PR AUC và lift để hiểu giá trị vận hành.
-6. Khi cần submission benchmark, fit pipeline đã chốt trên toàn bộ dataset gán nhãn phù hợp rồi dự đoán `test.csv` chính thức (cần nhận file này riêng) và kiểm tra submission.
+3. Thiết lập Stratified 5-Fold Cross-Validation cố định trên toàn bộ 12.000 khách hàng sạch và lưu OOF predictions.
+4. Dùng Logistic Regression làm baseline (mean ROC-AUC ~0.729); so sánh với LightGBM và CatBoost.
+5. Tạo đặc trưng tương tác (tỷ lệ sử dụng hạn mức, biến động chi tiêu, tần suất app logins); tối ưu mô hình bằng Optuna và xây dựng Rank Averaging Ensemble (EXP006).
+6. Khi giảng viên upload `test.csv` chính thức lên Kaggle: Áp dụng 5-Fold Bagging Ensemble (lấy trung bình dự đoán từ 5 models folds) để dự đoán cho 8.000 khách hàng, kiểm tra checklist và xuất file `submission.csv`.
 
-**Phụ thuộc còn thiếu:** `test.csv` chưa nằm trong các file được kiểm tra ở lượt này. Có thể hoàn tất EDA và validation trên train trước, nhưng chỉ tạo được submission cuối cùng khi nhận đúng test set.
+**Lưu ý:** `test.csv` sẽ do giảng viên upload lên Kaggle sau. Toàn bộ mã nguồn EDA, tiền xử lý và 5-Fold Cross-Validation được thực hiện trọn vẹn trên tập train trước, sẵn sàng sinh file nộp bài ngay khi nhận test set.
 
