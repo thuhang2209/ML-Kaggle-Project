@@ -1,0 +1,70 @@
+# ==============================================================================
+# Shared .gitignore for ML-Kaggle-Project (Root)
+# Covers: cafe-revenue-regression, credit-card-churn, and workspace root
+# ==============================================================================
+
+# Python Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Packaging
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# Model binaries & checkpoints (keep directory tracked via .gitkeep)
+models/*
+!models/.gitkeep
+**/models/*
+!**/models/.gitkeep
+*.pkl
+*.joblib
+*.cbm
+*.bin
+*.lgb
+
+# Processed / generated datasets (keep raw data and .gitkeep)
+**/data/processed/*
+!**/data/processed/.gitkeep
+
+# Submissions (keep .gitkeep)
+**/submissions/*
+!**/submissions/.gitkeep
+
+# Reports / figures generated outputs (keep templates and .gitkeep)
+**/reports/figures/*
+!**/reports/figures/.gitkeep
+
+# IDEs & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
