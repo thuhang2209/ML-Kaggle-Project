@@ -1,0 +1,152 @@
+
+======================================================================
+CELL 0 (markdown)
+======================================================================
+# Ki?m tra ch?t l??ng d? li?u
+
+Notebook n?y t?o b?o c?o ??nh l??ng, ki?m tra kh?a li?n k?t v? chu?n b? b?n sao ?? chu?n h?a t?i thi?u. D? li?u g?c kh?ng b? ghi ??.
+
+
+======================================================================
+CELL 1 (code)
+======================================================================
+from pathlib import Path
+import sys
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+def find_project_dir() -> Path:
+    """Find the project root from either a notebook or the repository root."""
+    candidates = [Path.cwd(), Path.cwd().parent, Path.cwd().parent.parent, Path.cwd() / "cafe-revenue-regression"]
+    for candidate in candidates:
+        if (candidate / "data" / "raw" / "train.csv").exists():
+            return candidate
+    raise FileNotFoundError("Khong tim thay file train.csv trong thư mục data/raw của dự án.")
+
+
+PROJECT_DIR = find_project_dir()
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from src.data.load import load_raw_data
+
+datasets = load_raw_data(PROJECT_DIR / "data" / "raw")
+train = datasets["train"].copy()
+stores = datasets["stores"].copy()
+weather = datasets["weather"].copy()
+holidays = datasets["holidays"].copy()
+
+print(f"Project: {PROJECT_DIR}")
+for name, frame in datasets.items():
+    print(f"{name:12s}: {frame.shape}")
+
+
+======================================================================
+CELL 2 (code)
+======================================================================
+# 1. Missing values v? ki?u d? li?u
+missing_rows = []
+for name, frame in datasets.items():
+    for column in frame.columns:
+        missing = int(frame[column].isna().sum())
+        missing_rows.append({
+            "dataset": name,
+            "column": column,
+            "dtype": str(frame[column].dtype),
+            "missing_count": missing,
+            "missing_pct": round(100 * missing / len(frame), 2) if len(frame) else 0,
+            "n_unique": int(frame[column].nunique(dropna=True)),
+        })
+
+missing_report = pd.DataFrame(missing_rows).sort_values(["missing_count", "dataset"], ascending=[False, True])
+display(missing_report)
+
+
+======================================================================
+CELL 3 (code)
+======================================================================
+# 2. Tr?ng l?p v? t?nh duy nh?t c?a kh?a
+key_checks = []
+for name, frame in datasets.items():
+    key_checks.append({"dataset": name, "duplicate_rows": int(frame.duplicated().sum())})
+
+for name, frame, keys in [
+    ("train", train, ["date", "store_id"]),
+    ("stores", stores, ["store_id"]),
+    ("weather", weather, ["date", "city"]),
+    ("holidays", holidays, ["date", "holiday_name"]),
+]:
+    if set(keys).issubset(frame.columns):
+        key_checks.append({"dataset": name, "key": " + ".join(keys), "duplicate_key_rows": int(frame.duplicated(keys, keep=False).sum())})
+
+duplicate_report = pd.DataFrame(key_checks).fillna("")
+display(duplicate_report)
+
+
+======================================================================
+CELL 4 (code)
+======================================================================
+# 3. Ki?m tra ph?m vi, gi? tr? b?t h?p l? v? kh?a li?n k?t
+range_checks = [
+    {"check": "revenue < 0", "count": int(train["revenue"].lt(0).sum())},
+    {"check": "revenue == 0", "count": int(train["revenue"].eq(0).sum())},
+    {"check": "is_promo not in {0, 1}", "count": int((~train["is_promo"].isin([0, 1])).sum())},
+    {"check": "area_m2 <= 0", "count": int(pd.to_numeric(stores["area_m2"], errors="coerce").le(0).sum())},
+    {"check": "rain_mm < 0", "count": int(pd.to_numeric(weather["rain_mm"], errors="coerce").lt(0).sum())},
+]
+display(pd.DataFrame(range_checks))
+
+train_store_ids = set(train["store_id"].dropna())
+store_ids = set(stores["store_id"].dropna())
+unknown_store_ids = sorted(train_store_ids - store_ids)
+print(f"Store ID kh?ng c? trong stores.csv: {len(unknown_store_ids)}", unknown_store_ids)
+
+for name, frame in datasets.items():
+    if "date" in frame:
+        invalid = int(frame["date"].isna().sum())
+        print(f"{name}: date thi?u/kh?ng h?p l?={invalid}, t?={frame['date'].min()}, ??n={frame['date'].max()}")
+
+
+======================================================================
+CELL 5 (code)
+======================================================================
+# 4. Ngo?i l? v? m?c ?? ?nh h??ng
+revenue = train["revenue"].dropna()
+q1, q3 = revenue.quantile([.25, .75])
+iqr = q3 - q1
+lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+outlier_mask = train["revenue"].lt(lower) | train["revenue"].gt(upper)
+
+outlier_report = pd.DataFrame([{
+    "q1": q1, "q3": q3, "iqr": iqr, "lower_bound": lower, "upper_bound": upper,
+    "outlier_count": int(outlier_mask.sum()), "outlier_pct": round(100 * outlier_mask.mean(), 2),
+    "negative_count": int(train["revenue"].lt(0).sum()),
+    "zero_count": int(train["revenue"].eq(0).sum()),
+}])
+display(outlier_report)
+display(train.loc[outlier_mask].sort_values("revenue", ascending=False).head(20))
+
+
+======================================================================
+CELL 6 (code)
+======================================================================
+# 5. B?n sao chu?n h?a t?i thi?u cho b??c ti?p theo
+# Ch? chu?n h?a ki?u d? li?u v? gi? nguy?n d?ng/gi? tr?; x? l? nghi?p v? c?n quy?t ??nh ri?ng.
+clean_datasets = {name: frame.copy() for name, frame in datasets.items()}
+clean_datasets["train"]["is_promo"] = pd.to_numeric(clean_datasets["train"]["is_promo"], errors="coerce").astype("Int8")
+clean_datasets["stores"]["area_m2"] = pd.to_numeric(clean_datasets["stores"]["area_m2"], errors="coerce")
+clean_datasets["weather"]["rain_mm"] = pd.to_numeric(clean_datasets["weather"]["rain_mm"], errors="coerce")
+
+# B?o c?o g?n ?? notebook/CI c? th? ki?m tra d? d?ng.
+quality_summary = pd.DataFrame({
+    "metric": ["train_rows", "missing_cells", "duplicate_rows", "duplicate_train_keys", "iqr_outliers", "unknown_store_ids"],
+    "value": [
+        len(train), int(train.isna().sum().sum()), int(train.duplicated().sum()),
+        int(train.duplicated(["date", "store_id"], keep=False).sum()), int(outlier_mask.sum()), len(unknown_store_ids),
+    ],
+})
+display(quality_summary)
+

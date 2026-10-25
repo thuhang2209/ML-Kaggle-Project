@@ -1,0 +1,159 @@
+
+======================================================================
+CELL 0 (markdown)
+======================================================================
+# Ph?n t?ch kh?m ph? d? li?u (EDA)
+
+M?c ti?u: hi?u c?u tr?c, ch?t l??ng, xu h??ng doanh thu v? m?i li?n h? v?i c?a h?ng, khuy?n m?i, th?i ti?t v? ng?y l?.
+
+
+======================================================================
+CELL 1 (code)
+======================================================================
+from pathlib import Path
+import sys
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+def find_project_dir() -> Path:
+    """Find the project root from either a notebook or the repository root."""
+    candidates = [Path.cwd(), Path.cwd().parent, Path.cwd().parent.parent, Path.cwd() / "cafe-revenue-regression"]
+    for candidate in candidates:
+        if (candidate / "data" / "raw" / "train.csv").exists():
+            return candidate
+    raise FileNotFoundError("Khong tim thay file train.csv trong thư mục data/raw của dự án.")
+
+
+PROJECT_DIR = find_project_dir()
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from src.data.load import load_raw_data
+
+datasets = load_raw_data(PROJECT_DIR / "data" / "raw")
+train = datasets["train"].copy()
+stores = datasets["stores"].copy()
+weather = datasets["weather"].copy()
+holidays = datasets["holidays"].copy()
+
+print(f"Project: {PROJECT_DIR}")
+for name, frame in datasets.items():
+    print(f"{name:12s}: {frame.shape}")
+
+
+======================================================================
+CELL 2 (code)
+======================================================================
+schema_report = pd.concat(
+    {
+        name: frame.dtypes.astype("string")
+        for name, frame in datasets.items()
+    }, axis=1
+).fillna("-")
+
+display(schema_report)
+
+for name, frame in datasets.items():
+    date_cols = [col for col in frame.columns if col == "date" or col == "open_date"]
+    if date_cols:
+        ranges = {
+            col: (frame[col].min(), frame[col].max(), int(frame[col].isna().sum()))
+            for col in date_cols
+        }
+        print(name, ranges)
+
+
+======================================================================
+CELL 3 (code)
+======================================================================
+quality_overview = []
+for name, frame in datasets.items():
+    quality_overview.append({
+        "dataset": name,
+        "rows": len(frame),
+        "columns": frame.shape[1],
+        "missing_cells": int(frame.isna().sum().sum()),
+        "duplicate_rows": int(frame.duplicated().sum()),
+    })
+
+quality_overview = pd.DataFrame(quality_overview)
+display(quality_overview)
+
+# Kh?ng x?a ngo?i l? ? EDA; ch? g?n c? ?? ki?m tra ti?p.
+revenue_stats = train["revenue"].describe(percentiles=[.5, .9, .95, .99, .999]).to_frame("revenue")
+display(revenue_stats)
+
+
+======================================================================
+CELL 4 (code)
+======================================================================
+store_lookup = stores.drop_duplicates("store_id").copy()
+weather_lookup = weather.drop_duplicates(["date", "city"]).copy()
+holiday_by_date = (
+    holidays.dropna(subset=["date"])
+    .groupby("date", as_index=False)
+    .agg(is_holiday=("holiday_name", "size"), holiday_names=("holiday_name", lambda s: " | ".join(s.astype(str).unique())))
+)
+
+eda = train.merge(store_lookup, on="store_id", how="left", validate="many_to_one")
+eda = eda.merge(weather_lookup, on=["date", "city"], how="left", validate="many_to_one")
+eda = eda.merge(holiday_by_date, on="date", how="left", validate="many_to_one")
+eda["is_holiday"] = eda["is_holiday"].fillna(0).gt(0).astype("int8")
+
+print(f"S? d?ng train: {len(train):,}; sau gh?p: {len(eda):,}")
+print("Thi?u sau gh?p:")
+display(eda[["city", "temp_c", "rain_mm", "is_holiday"]].isna().sum().to_frame("missing"))
+
+# T?ng h?p theo ng?y gi?p bi?u ?? nh? h?n v? ?t b? ch?ng ?i?m.
+daily_revenue = eda.groupby("date", as_index=False).agg(
+    revenue=("revenue", "sum"),
+    mean_revenue=("revenue", "mean"),
+    promo_rate=("is_promo", "mean"),
+    is_holiday=("is_holiday", "max"),
+    temp_c=("temp_c", "mean"),
+    rain_mm=("rain_mm", "mean"),
+)
+display(daily_revenue.head())
+
+
+======================================================================
+CELL 5 (code)
+======================================================================
+sns.set_theme(style="whitegrid")
+fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+sns.lineplot(data=daily_revenue, x="date", y="revenue", ax=axes[0, 0], errorbar=None)
+axes[0, 0].set_title("T?ng doanh thu theo ng?y")
+
+sns.boxplot(data=eda, x="is_promo", y="revenue", showfliers=False, ax=axes[0, 1])
+axes[0, 1].set_title("Doanh thu theo khuy?n m?i")
+
+sns.scatterplot(data=daily_revenue, x="temp_c", y="revenue", alpha=.7, ax=axes[1, 0])
+axes[1, 0].set_title("Doanh thu ng?y v? nhi?t ?? trung b?nh")
+
+sns.boxplot(data=eda, x="is_holiday", y="revenue", showfliers=False, ax=axes[1, 1])
+axes[1, 1].set_xticks([0, 1], ["Ng?y th??ng", "Ng?y l?"])
+axes[1, 1].set_title("Doanh thu ng?y l? v? ng?y th??ng")
+
+plt.tight_layout()
+plt.show()
+
+comparison = eda.groupby("is_promo")["revenue"].agg(["count", "mean", "median", "std"]).round(2)
+display(comparison)
+
+
+======================================================================
+CELL 6 (code)
+======================================================================
+q1, q3 = train["revenue"].quantile([.25, .75])
+iqr = q3 - q1
+lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+outlier_mask = train["revenue"].lt(lower) | train["revenue"].gt(upper)
+
+print(f"Ng??ng IQR: [{lower:.2f}, {upper:.2f}]")
+print(f"Ngo?i l?: {int(outlier_mask.sum()):,} ({outlier_mask.mean():.2%})")
+display(train.loc[outlier_mask].sort_values("revenue", ascending=False).head(20))
+

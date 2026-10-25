@@ -1,0 +1,231 @@
+
+======================================================================
+CELL 0 (code)
+======================================================================
+import sys
+from pathlib import Path
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+NOTEBOOK_DIR = Path.cwd()
+
+if not (NOTEBOOK_DIR / "load.py").exists():
+    NOTEBOOK_DIR = Path("cafe-revenue-regression/notebooks")
+
+sys.path.insert(0, str(NOTEBOOK_DIR.resolve()))
+
+from load import load_all
+
+result = load_all()
+
+if isinstance(result, dict):
+    train = result["train"]
+    stores = result["stores"]
+    weather = result["weather"]
+    holidays = result["holidays"]
+else:
+    train, stores, weather, holidays = result
+
+datasets = {
+    "train": train,
+    "stores": stores,
+    "weather": weather,
+    "holidays": holidays
+}
+
+for name, df in datasets.items():
+    print(f"{name}: {df.shape}")
+
+======================================================================
+CELL 1 (code)
+======================================================================
+missing_report = []
+
+for name, df in datasets.items():
+    for col in df.columns:
+        missing_count = int(df[col].isna().sum())
+        missing_percent = missing_count / len(df) * 100 if len(df) else 0
+
+        missing_report.append({
+            "dataset": name,
+            "column": col,
+            "missing_count": missing_count,
+            "missing_percent": round(missing_percent, 2)
+        })
+
+missing_df = pd.DataFrame(missing_report)
+display(missing_df[missing_df["missing_count"] > 0])
+
+plt.figure(figsize=(12, 5))
+sns.barplot(
+    data=missing_df[missing_df["missing_count"] > 0],
+    x="column",
+    y="missing_count",
+    hue="dataset"
+)
+plt.title("Missing Values by Dataset and Column")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+======================================================================
+CELL 2 (code)
+======================================================================
+duplicate_report = []
+
+for name, df in datasets.items():
+    duplicate_report.append({
+        "dataset": name,
+        "duplicate_rows": int(df.duplicated().sum())
+    })
+
+display(pd.DataFrame(duplicate_report))
+
+if {"date", "store_id"}.issubset(train.columns):
+    duplicate_keys = train[
+        train.duplicated(
+            subset=["date", "store_id"],
+            keep=False
+        )
+    ].sort_values(["date", "store_id"])
+
+    print("Số dòng thuộc nhóm trùng date + store_id:",
+          len(duplicate_keys))
+    display(duplicate_keys.head(20))
+
+======================================================================
+CELL 3 (code)
+======================================================================
+train["revenue"] = pd.to_numeric(
+    train["revenue"], errors="coerce"
+)
+
+revenue = train["revenue"].dropna()
+
+Q1 = revenue.quantile(0.25)
+Q3 = revenue.quantile(0.75)
+IQR = Q3 - Q1
+
+lower_bound = Q1 - 1.5 * IQR
+upper_bound = Q3 + 1.5 * IQR
+
+outlier_mask = (
+    (train["revenue"] < lower_bound) |
+    (train["revenue"] > upper_bound)
+)
+
+print("Q1:", Q1)
+print("Q3:", Q3)
+print("IQR:", IQR)
+print("Ngưỡng dưới:", lower_bound)
+print("Ngưỡng trên:", upper_bound)
+print("Số ngoại lệ theo IQR:", int(outlier_mask.sum()))
+print("Doanh thu âm:", int((train["revenue"] < 0).sum()))
+print("Doanh thu bằng 0:", int((train["revenue"] == 0).sum()))
+print("Doanh thu lớn nhất:", train["revenue"].max())
+
+display(
+    train.loc[outlier_mask]
+    .sort_values("revenue", ascending=False)
+    .head(20)
+)
+
+======================================================================
+CELL 4 (code)
+======================================================================
+for name, df in datasets.items():
+    print(f"\n{'=' * 50}")
+    print(f"DATASET: {name}")
+    print(df.dtypes)
+
+    if "date" in df.columns:
+        parsed_dates = pd.to_datetime(
+            df["date"], errors="coerce", dayfirst=True
+        )
+
+        invalid_count = int(
+            (df["date"].notna() & parsed_dates.isna()).sum()
+        )
+
+        print("Ngày không hợp lệ:", invalid_count)
+        print("Ngày nhỏ nhất:", parsed_dates.min())
+        print("Ngày lớn nhất:", parsed_dates.max())
+
+======================================================================
+CELL 5 (code)
+======================================================================
+print("KIỂM TRA STORE_ID")
+
+if "store_id" in train.columns and "store_id" in stores.columns:
+    train_store_ids = set(train["store_id"].dropna().unique())
+    known_store_ids = set(stores["store_id"].dropna().unique())
+
+    unknown_ids = train_store_ids - known_store_ids
+
+    print("Số cửa hàng trong train:", len(train_store_ids))
+    print("Số cửa hàng trong stores:", len(known_store_ids))
+    print("Store ID không có trong stores:", sorted(unknown_ids))
+
+print("\nKIỂM TRA DIỆN TÍCH")
+
+if "area_m2" in stores.columns:
+    area = pd.to_numeric(stores["area_m2"], errors="coerce")
+    print("Diện tích thiếu:", int(area.isna().sum()))
+    print("Diện tích âm:", int((area < 0).sum()))
+
+print("\nKIỂM TRA LƯỢNG MƯA")
+
+if "rain_mm" in weather.columns:
+    rain = pd.to_numeric(weather["rain_mm"], errors="coerce")
+    print("Lượng mưa thiếu:", int(rain.isna().sum()))
+    print("Lượng mưa âm:", int((rain < 0).sum()))
+
+======================================================================
+CELL 6 (code)
+======================================================================
+OUTPUT_DIR = NOTEBOOK_DIR.resolve().parent / "reports"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+missing_df.to_csv(
+    OUTPUT_DIR / "missing_values_report.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+duplicate_df = pd.DataFrame(duplicate_report)
+duplicate_df.to_csv(
+    OUTPUT_DIR / "duplicate_report.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+summary = {
+    "train_rows": len(train),
+    "stores_rows": len(stores),
+    "weather_rows": len(weather),
+    "holidays_rows": len(holidays),
+    "train_missing_cells": int(train.isna().sum().sum()),
+    "train_duplicate_rows": int(train.duplicated().sum()),
+    "duplicate_date_store_id": int(
+        train.duplicated(["date", "store_id"]).sum()
+    ),
+    "revenue_outliers_iqr": int(outlier_mask.sum()),
+    "negative_revenue": int((train["revenue"] < 0).sum()),
+    "zero_revenue": int((train["revenue"] == 0).sum())
+}
+
+summary_df = pd.DataFrame(
+    list(summary.items()),
+    columns=["metric", "value"]
+)
+
+summary_df.to_csv(
+    OUTPUT_DIR / "data_quality_summary.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+display(summary_df)
+print("Đã lưu các báo cáo tại:", OUTPUT_DIR)
